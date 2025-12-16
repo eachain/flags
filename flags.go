@@ -3,6 +3,7 @@ package flags
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -182,7 +183,15 @@ func (fs *FlagSet) Usage() string {
 				} else if s, ok := p.dft.(string); ok {
 					fmt.Fprintf(w, " (default: %q)", s)
 				} else {
-					fmt.Fprintf(w, " (default: %v)", p.dft)
+					if typ := reflect.TypeOf(p.dft); typ != nil && (typ.Kind() == reflect.Slice || typ.Kind() == reflect.Map) {
+						buf := new(bytes.Buffer)
+						enc := json.NewEncoder(buf)
+						enc.SetEscapeHTML(false)
+						enc.Encode(p.dft)
+						fmt.Fprintf(w, " (default: %s)", bytes.TrimSpace(buf.Bytes()))
+					} else {
+						fmt.Fprintf(w, " (default: %v)", p.dft)
+					}
 				}
 			}
 			fmt.Fprintln(w)
@@ -259,7 +268,53 @@ func (fs *FlagSet) Cmd(name, desc string, mws ...Middleware) *FlagSet {
 	return cmd
 }
 
-func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc string, seperator ...string) {
+type options struct {
+	sliceSep string
+	kvSep    string
+	zeroDft  bool
+}
+
+// Options：设置参数规则。
+// 可选值有WithSliceSeperator、WithKeyValueSeperator、WithZeroDefault。
+type Options interface {
+	apply(opt *options)
+}
+
+type optionsFunc func(opt *options)
+
+func (f optionsFunc) apply(opt *options) { f(opt) }
+
+// WithSliceSeperator：数组切分规则，默认为","。
+// 用于map结构时，先以slice seperator切分成kv对，再用kv seperator切分key/value值。
+func WithSliceSeperator(seperator string) Options {
+	return optionsFunc(func(opt *options) {
+		opt.sliceSep = seperator
+	})
+}
+
+// WithKeyValueSeperator：key/value切分规则，默认为":"。
+// 应先设置WithSliceSeperator切分为kv对，再用kv seperator切分key/value值。
+func WithKeyValueSeperator(seperator string) Options {
+	return optionsFunc(func(opt *options) {
+		opt.kvSep = seperator
+	})
+}
+
+// WithZeroDefault：是否显示默认零值。
+// 比如int参数为零值0时，将不在help中显示"(default: 0)"。
+// 可设置该参数强制显示。
+func WithZeroDefault(zero bool) Options {
+	return optionsFunc(func(opt *options) {
+		opt.zeroDft = zero
+	})
+}
+
+func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc string, optFns ...Options) {
+	opts := new(options)
+	for _, opt := range optFns {
+		opt.apply(opts)
+	}
+
 	var short string
 	if shortByte != NoShort {
 		if !ValidShort(shortByte) {
@@ -286,13 +341,15 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 	}
 
 	if dft != nil {
-		if dv := reflect.ValueOf(dft); dv.IsZero() {
-			dft = nil
-		} else {
+		if opts.zeroDft {
 			t1 := reflect.TypeOf(ptr).Elem()
 			t2 := reflect.TypeOf(dft)
 			if t1 != t2 {
 				panic(fmt.Errorf("flags: var pointer type %v not match default value type %v", t1, t2))
+			}
+		} else {
+			if dv := reflect.ValueOf(dft); dv.IsZero() {
+				dft = nil
 			}
 		}
 	}
@@ -306,12 +363,12 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 	}
 
 	sep1 := ","
-	if len(seperator) > 0 && seperator[0] != "" {
-		sep1 = seperator[0]
+	if opts.sliceSep != "" {
+		sep1 = opts.sliceSep
 	}
 	sep2 := ":"
-	if len(seperator) > 1 && seperator[1] != "" {
-		sep2 = seperator[1]
+	if opts.kvSep != "" {
+		sep2 = opts.kvSep
 	}
 	fs.params = append(fs.params, &param{
 		ptr:   ptr,
@@ -359,172 +416,172 @@ func ValidLong(long string) bool {
 	return true
 }
 
-func (fs *FlagSet) Int(short byte, long string, dft int, desc string) *int {
+func (fs *FlagSet) Int(short byte, long string, dft int, desc string, opts ...Options) *int {
 	ptr := new(int)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) IntVar(ptr *int, short byte, long string, dft int, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) IntVar(ptr *int, short byte, long string, dft int, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Int8(short byte, long string, dft int8, desc string) *int8 {
+func (fs *FlagSet) Int8(short byte, long string, dft int8, desc string, opts ...Options) *int8 {
 	ptr := new(int8)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Int8Var(ptr *int8, short byte, long string, dft int8, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Int8Var(ptr *int8, short byte, long string, dft int8, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Int16(short byte, long string, dft int16, desc string) *int16 {
+func (fs *FlagSet) Int16(short byte, long string, dft int16, desc string, opts ...Options) *int16 {
 	ptr := new(int16)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Int16Var(ptr *int16, short byte, long string, dft int16, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Int16Var(ptr *int16, short byte, long string, dft int16, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Int32(short byte, long string, dft int32, desc string) *int32 {
+func (fs *FlagSet) Int32(short byte, long string, dft int32, desc string, opts ...Options) *int32 {
 	ptr := new(int32)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Int32Var(ptr *int32, short byte, long string, dft int32, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Int32Var(ptr *int32, short byte, long string, dft int32, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Int64(short byte, long string, dft int64, desc string) *int64 {
+func (fs *FlagSet) Int64(short byte, long string, dft int64, desc string, opts ...Options) *int64 {
 	ptr := new(int64)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Int64Var(ptr *int64, short byte, long string, dft int64, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Int64Var(ptr *int64, short byte, long string, dft int64, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Uint(short byte, long string, dft uint, desc string) *uint {
+func (fs *FlagSet) Uint(short byte, long string, dft uint, desc string, opts ...Options) *uint {
 	ptr := new(uint)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) UintVar(ptr *uint, short byte, long string, dft uint, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) UintVar(ptr *uint, short byte, long string, dft uint, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Uint8(short byte, long string, dft uint8, desc string) *uint8 {
+func (fs *FlagSet) Uint8(short byte, long string, dft uint8, desc string, opts ...Options) *uint8 {
 	ptr := new(uint8)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Uint8Var(ptr *uint8, short byte, long string, dft uint8, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Uint8Var(ptr *uint8, short byte, long string, dft uint8, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Uint16(short byte, long string, dft uint16, desc string) *uint16 {
+func (fs *FlagSet) Uint16(short byte, long string, dft uint16, desc string, opts ...Options) *uint16 {
 	ptr := new(uint16)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Uint16Var(ptr *uint16, short byte, long string, dft uint16, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Uint16Var(ptr *uint16, short byte, long string, dft uint16, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Uint32(short byte, long string, dft uint32, desc string) *uint32 {
+func (fs *FlagSet) Uint32(short byte, long string, dft uint32, desc string, opts ...Options) *uint32 {
 	ptr := new(uint32)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Uint32Var(ptr *uint32, short byte, long string, dft uint32, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Uint32Var(ptr *uint32, short byte, long string, dft uint32, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Uint64(short byte, long string, dft uint64, desc string) *uint64 {
+func (fs *FlagSet) Uint64(short byte, long string, dft uint64, desc string, opts ...Options) *uint64 {
 	ptr := new(uint64)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Uint64Var(ptr *uint64, short byte, long string, dft uint64, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Uint64Var(ptr *uint64, short byte, long string, dft uint64, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Float32(short byte, long string, dft float32, desc string) *float32 {
+func (fs *FlagSet) Float32(short byte, long string, dft float32, desc string, opts ...Options) *float32 {
 	ptr := new(float32)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Float32Var(ptr *float32, short byte, long string, dft float32, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Float32Var(ptr *float32, short byte, long string, dft float32, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Float64(short byte, long string, dft float64, desc string) *float64 {
+func (fs *FlagSet) Float64(short byte, long string, dft float64, desc string, opts ...Options) *float64 {
 	ptr := new(float64)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) Float64Var(ptr *float64, short byte, long string, dft float64, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) Float64Var(ptr *float64, short byte, long string, dft float64, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Str(short byte, long string, dft string, desc string) *string {
+func (fs *FlagSet) Str(short byte, long string, dft string, desc string, opts ...Options) *string {
 	ptr := new(string)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) StrVar(ptr *string, short byte, long string, dft string, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) StrVar(ptr *string, short byte, long string, dft string, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Bool(short byte, long string, dft bool, desc string) *bool {
+func (fs *FlagSet) Bool(short byte, long string, dft bool, desc string, opts ...Options) *bool {
 	ptr := new(bool)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) BoolVar(ptr *bool, short byte, long string, dft bool, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) BoolVar(ptr *bool, short byte, long string, dft bool, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) Duration(short byte, long string, dft time.Duration, desc string) *time.Duration {
+func (fs *FlagSet) Duration(short byte, long string, dft time.Duration, desc string, opts ...Options) *time.Duration {
 	ptr := new(time.Duration)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) DurationVar(ptr *time.Duration, short byte, long string, dft time.Duration, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) DurationVar(ptr *time.Duration, short byte, long string, dft time.Duration, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
-func (fs *FlagSet) DateTime(short byte, long string, dft time.Time, desc string) *time.Time {
+func (fs *FlagSet) DateTime(short byte, long string, dft time.Time, desc string, opts ...Options) *time.Time {
 	ptr := new(time.Time)
-	fs.addVar(ptr, short, long, dft, desc)
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func (fs *FlagSet) DateTimeVar(ptr *time.Time, short byte, long string, dft time.Time, desc string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) DateTimeVar(ptr *time.Time, short byte, long string, dft time.Time, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
 // AnyVar: add any pointer to parse.
 // param ptr must be a pointer,
 // param dft should be nil if no default value,
 // or else dft type must be reflect.TypeOf(ptr).Elem().
-func (fs *FlagSet) AnyVar(ptr any, short byte, long string, dft any, desc string, seperator ...string) {
-	fs.addVar(ptr, short, long, dft, desc)
+func (fs *FlagSet) AnyVar(ptr any, short byte, long string, dft any, desc string, opts ...Options) {
+	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
 type KeyTypes interface {
@@ -547,54 +604,54 @@ type Types[K KeyTypes, V ElemTypes] interface {
 	ElemTypes | ComTypes[K, V]
 }
 
-func Any[T Types[K, V], K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft T, desc string, seperator ...string) *T {
+func Any[T Types[K, V], K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft T, desc string, opts ...Options) *T {
 	ptr := new(T)
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func AnyVar[T Types[K, V], K KeyTypes, V ElemTypes](fs *FlagSet, ptr *T, short byte, long string, dft T, desc string, seperator ...string) {
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+func AnyVar[T Types[K, V], K KeyTypes, V ElemTypes](fs *FlagSet, ptr *T, short byte, long string, dft T, desc string, opts ...Options) {
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 }
 
-func Slice[T ElemTypes](fs *FlagSet, short byte, long string, dft []T, desc string, seperator ...string) *[]T {
+func Slice[T ElemTypes](fs *FlagSet, short byte, long string, dft []T, desc string, opts ...Options) *[]T {
 	ptr := new([]T)
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func SliceVar[T ElemTypes](fs *FlagSet, ptr *[]T, short byte, long string, dft []T, desc string, seperator ...string) {
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+func SliceVar[T ElemTypes](fs *FlagSet, ptr *[]T, short byte, long string, dft []T, desc string, opts ...Options) {
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 }
 
-func Map[K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft map[K]V, desc string, seperator ...string) *map[K]V {
+func Map[K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft map[K]V, desc string, opts ...Options) *map[K]V {
 	ptr := new(map[K]V)
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func MapVar[K KeyTypes, V ElemTypes](fs *FlagSet, ptr *map[K]V, short byte, long string, dft map[K]V, desc string, seperator ...string) {
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+func MapVar[K KeyTypes, V ElemTypes](fs *FlagSet, ptr *map[K]V, short byte, long string, dft map[K]V, desc string, opts ...Options) {
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 }
 
-func SliceMap[K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft []map[K]V, desc string, seperator ...string) *[]map[K]V {
+func SliceMap[K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft []map[K]V, desc string, opts ...Options) *[]map[K]V {
 	ptr := new([]map[K]V)
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func SliceMapVar[K KeyTypes, V ElemTypes](fs *FlagSet, ptr *[]map[K]V, short byte, long string, dft []map[K]V, desc string, seperator ...string) {
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+func SliceMapVar[K KeyTypes, V ElemTypes](fs *FlagSet, ptr *[]map[K]V, short byte, long string, dft []map[K]V, desc string, opts ...Options) {
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 }
 
-func MapSlice[K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft map[K][]V, desc string, seperator ...string) *map[K][]V {
+func MapSlice[K KeyTypes, V ElemTypes](fs *FlagSet, short byte, long string, dft map[K][]V, desc string, opts ...Options) *map[K][]V {
 	ptr := new(map[K][]V)
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 	return ptr
 }
 
-func MapSliceVar[K KeyTypes, V ElemTypes](fs *FlagSet, ptr *map[K][]V, short byte, long string, dft map[K][]V, desc string, seperator ...string) {
-	fs.AnyVar(ptr, short, long, dft, desc, seperator...)
+func MapSliceVar[K KeyTypes, V ElemTypes](fs *FlagSet, ptr *map[K][]V, short byte, long string, dft map[K][]V, desc string, opts ...Options) {
+	fs.AnyVar(ptr, short, long, dft, desc, opts...)
 }
 
 type arguments struct {
