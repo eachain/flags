@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -28,14 +30,15 @@ var (
 
 // FlagSet提供一组参数解析/命令执行的绑定关系。不可复用，如需要重复解析，需重新生成新的FlagSet。
 type FlagSet struct {
-	name   string       // 命令名称
-	desc   string       // 命令描述
-	params []*param     // 命令参数
-	cmds   []*FlagSet   // 子命令
-	fn     Handler      // 命令执行代码
-	mws    []Middleware // 中间件
-	parent *FlagSet     // 父命令
-	stmt   *FlagSet
+	name    string         // 命令名称
+	desc    string         // 命令描述
+	params  []*param       // 命令参数
+	paramOf map[any]*param // 指针->*param
+	cmds    []*FlagSet     // 子命令
+	fn      Handler        // 命令执行代码
+	mws     []Middleware   // 中间件
+	parent  *FlagSet       // 父命令
+	stmt    *FlagSet
 }
 
 // param参数解析
@@ -55,9 +58,14 @@ type param struct {
 // New生成一次性解析对象。name：应用名称，desc：应用描述，用于生成usage
 func New(name, desc string) *FlagSet {
 	return &FlagSet{
-		name: name,
-		desc: desc,
+		name:    name,
+		desc:    desc,
+		paramOf: make(map[any]*param),
 	}
+}
+
+func Cmdline(desc string) *FlagSet {
+	return New(filepath.Base(os.Args[0]), desc)
 }
 
 type (
@@ -126,6 +134,24 @@ func (fs *FlagSet) Run(ctx context.Context, args ...string) (string, error) {
 	}
 	f.fn(ctx)
 	return f.Usage(), nil
+}
+
+func (fs *FlagSet) RunCmdline(ctx context.Context) {
+	usage, err := fs.Run(ctx, os.Args[1:]...)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, ErrHelp) {
+		fmt.Fprintln(os.Stderr, usage)
+		return
+	}
+
+	if errors.Is(err, ErrNoExecFunc) {
+		fmt.Fprintln(os.Stderr, usage)
+	} else {
+		fmt.Fprintln(os.Stderr, err.Error())
+	}
+	os.Exit(1)
 }
 
 func (fs *FlagSet) fullName() string {
@@ -226,10 +252,11 @@ func (fs *FlagSet) Stmt(mws ...Middleware) *FlagSet {
 	copy(params, fs.params)
 
 	s := &FlagSet{
-		desc:   fs.desc,
-		params: params,
-		mws:    mws,
-		parent: fs,
+		desc:    fs.desc,
+		params:  params,
+		paramOf: fs.paramOf,
+		mws:     mws,
+		parent:  fs,
 	}
 	if fs.stmt != nil {
 		s.stmt = fs.stmt
@@ -254,11 +281,12 @@ func (fs *FlagSet) Cmd(name, desc string, mws ...Middleware) *FlagSet {
 	copy(params, fs.params)
 
 	cmd := &FlagSet{
-		name:   name,
-		desc:   desc,
-		params: params,
-		mws:    mws,
-		parent: fs,
+		name:    name,
+		desc:    desc,
+		params:  params,
+		paramOf: fs.paramOf,
+		mws:     mws,
+		parent:  fs,
 	}
 	if fs.stmt != nil {
 		fs.stmt.cmds = append(fs.stmt.cmds, cmd)
@@ -335,6 +363,20 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 			panic(fmt.Errorf("flags: duplicated long option: --%v", long))
 		}
 	}
+	if prev, ok := fs.paramOf[ptr]; ok {
+		var prevParam, currParam string
+		if prev.long != "" {
+			prevParam = "--" + prev.long
+		} else if prev.short != "" {
+			prevParam = "-" + prev.short
+		}
+		if long != "" {
+			currParam = "--" + long
+		} else if short != "" {
+			currParam = "-" + short
+		}
+		panic(fmt.Errorf("flags: duplicated option var pointer: %v with %v", currParam, prevParam))
+	}
 
 	if typ := reflect.TypeOf(ptr); typ.Kind() != reflect.Pointer {
 		panic(fmt.Errorf("flags: var type %v must be a pointer", typ))
@@ -380,6 +422,7 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 		sep1:  sep1,
 		sep2:  sep2,
 	})
+	fs.paramOf[ptr] = fs.params[len(fs.params)-1]
 }
 
 func isNumber(b byte) bool {
@@ -679,6 +722,13 @@ func (s *arguments) next() string {
 	i := s.idx
 	s.idx++
 	return s.args[i]
+}
+
+// Parsed：判断参数是否被解析。
+// 返回false表示未被解析，填充默认值。
+func (fs *FlagSet) Parsed(pointer any) bool {
+	param := fs.paramOf[pointer]
+	return param != nil && param.parsed
 }
 
 func (fs *FlagSet) parse(args []string) (*FlagSet, error) {
