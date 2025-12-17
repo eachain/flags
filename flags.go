@@ -204,8 +204,8 @@ func (fs *FlagSet) Usage() string {
 			}
 			fmt.Fprintf(w, " %v", p.typ)
 			if p.dft != nil {
-				if t, ok := p.dft.(time.Time); ok {
-					fmt.Fprintf(w, " (default: %q)", t.Format(DateTime))
+				if t, ok := p.dft.(Stringer); ok {
+					fmt.Fprintf(w, " (default: %v)", t.FlagString())
 				} else if s, ok := p.dft.(string); ok {
 					fmt.Fprintf(w, " (default: %q)", s)
 				} else {
@@ -337,6 +337,22 @@ func WithZeroDefault(zero bool) Options {
 	})
 }
 
+type (
+	// Parser：自定义解析规则。
+	Parser interface {
+		ParseFlag(string) error
+	}
+	// Type：自定义显示类型，默认为strings.ToLower(reflect.TypeOf(x).String())。
+	Type interface {
+		FlagType() string
+	}
+	// Stringer：自定义显示格式，用于默认值展示(default: show_here)。
+	// 如果不定义，默认用fmt.Stringer。
+	Stringer interface {
+		FlagString() string
+	}
+)
+
 func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc string, optFns ...Options) {
 	opts := new(options)
 	for _, opt := range optFns {
@@ -396,12 +412,13 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 		}
 	}
 
-	typ := reflect.TypeOf(ptr).Elem().String()
-	switch typ {
-	case "time.Duration":
-		typ = "duration"
-	case "time.Time":
-		typ = fmt.Sprintf("datetime, format: %q", DateTime)
+	var typ string
+	if t, ok := ptr.(Type); ok {
+		typ = t.FlagType()
+	} else if t, ok := dft.(Type); ok {
+		typ = t.FlagType()
+	} else {
+		typ = reflect.TypeOf(ptr).Elem().String()
 	}
 
 	sep1 := ","
@@ -599,24 +616,74 @@ func (fs *FlagSet) BoolVar(ptr *bool, short byte, long string, dft bool, desc st
 	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
+type duration time.Duration
+
+var (
+	_ Parser   = (*duration)(nil)
+	_ Type     = duration(0)
+	_ Stringer = duration(0)
+)
+
+func (dur *duration) ParseFlag(s string) error {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*dur = duration(d)
+	return nil
+}
+
+func (duration) FlagType() string {
+	return "duration"
+}
+
+func (dur duration) FlagString() string {
+	return time.Duration(dur).String()
+}
+
 func (fs *FlagSet) Duration(short byte, long string, dft time.Duration, desc string, opts ...Options) *time.Duration {
 	ptr := new(time.Duration)
-	fs.addVar(ptr, short, long, dft, desc, opts...)
+	fs.addVar((*duration)(ptr), short, long, duration(dft), desc, opts...)
 	return ptr
 }
 
 func (fs *FlagSet) DurationVar(ptr *time.Duration, short byte, long string, dft time.Duration, desc string, opts ...Options) {
-	fs.addVar(ptr, short, long, dft, desc, opts...)
+	fs.addVar((*duration)(ptr), short, long, duration(dft), desc, opts...)
+}
+
+type datetime time.Time
+
+var (
+	_ Parser   = (*datetime)(nil)
+	_ Type     = datetime{}
+	_ Stringer = datetime{}
+)
+
+func (dt *datetime) ParseFlag(s string) error {
+	t, err := time.ParseInLocation(DateTime, s, time.Local)
+	if err != nil {
+		return err
+	}
+	*dt = datetime(t)
+	return nil
+}
+
+func (datetime) FlagType() string {
+	return "datetime"
+}
+
+func (dt datetime) FlagString() string {
+	return (time.Time)(dt).Format(DateTime)
 }
 
 func (fs *FlagSet) DateTime(short byte, long string, dft time.Time, desc string, opts ...Options) *time.Time {
 	ptr := new(time.Time)
-	fs.addVar(ptr, short, long, dft, desc, opts...)
+	fs.addVar((*datetime)(ptr), short, long, datetime(dft), desc, opts...)
 	return ptr
 }
 
 func (fs *FlagSet) DateTimeVar(ptr *time.Time, short byte, long string, dft time.Time, desc string, opts ...Options) {
-	fs.addVar(ptr, short, long, dft, desc, opts...)
+	fs.addVar((*datetime)(ptr), short, long, datetime(dft), desc, opts...)
 }
 
 // AnyVar: add any pointer to parse.
@@ -624,6 +691,17 @@ func (fs *FlagSet) DateTimeVar(ptr *time.Time, short byte, long string, dft time
 // param dft should be nil if no default value,
 // or else dft type must be reflect.TypeOf(ptr).Elem().
 func (fs *FlagSet) AnyVar(ptr any, short byte, long string, dft any, desc string, opts ...Options) {
+	if p, ok := ptr.(*time.Duration); ok {
+		ptr = (*duration)(p)
+		if dft != nil {
+			dft = duration(dft.(time.Duration))
+		}
+	} else if p, ok := ptr.(*time.Time); ok {
+		ptr = (*datetime)(p)
+		if dft != nil {
+			dft = datetime(dft.(time.Time))
+		}
+	}
 	fs.addVar(ptr, short, long, dft, desc, opts...)
 }
 
@@ -831,44 +909,40 @@ func (fs *FlagSet) _parseLong(args *arguments, arg string) error {
 	return fs._parseParam(args, arg, param)
 }
 
-var (
-	typDuration = reflect.TypeOf(time.Duration(0))
-	typDateTime = reflect.TypeOf(time.Time{})
-)
-
 func (fs *FlagSet) _parseParam(args *arguments, arg string, p *param) error {
 	p.parsed = true
 
-	typ := reflect.TypeOf(p.ptr).Elem()
-	switch typ {
-	case typDuration:
-		return fs._parseDuration(args, arg, p)
-	case typDateTime:
-		return fs._parseDateTime(args, arg, p)
+	switch x := p.ptr.(type) {
+	case Parser:
+		return fs._parseParser(args, arg, x)
+	case *time.Duration:
+		return fs._parseParser(args, arg, (*duration)(x))
+	case *time.Time:
+		return fs._parseParser(args, arg, (*datetime)(x))
+	}
+
+	switch reflect.TypeOf(p.ptr).Elem().Kind() {
 	default:
-		switch typ.Kind() {
-		default:
-			return fs._parseParamErr(arg, fmt.Errorf("unsupported type %v", p.typ))
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return fs._parseInts(args, arg, p)
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return fs._parseUints(args, arg, p)
-		case reflect.Float32:
-			return fs._parseFloat32(args, arg, p)
-		case reflect.Float64:
-			return fs._parseFloat64(args, arg, p)
-		case reflect.Bool:
-			return fs._parseBool(args, arg, p)
-		case reflect.String:
-			return fs._parseString(args, arg, p)
-		case reflect.Slice:
-			if args.align {
-				return fs._parseSliceAlign(args, arg, p)
-			}
-			return fs._parseSlice(args, arg, p)
-		case reflect.Map:
-			return fs._parseMap(args, arg, p)
+		return fs._parseParamErr(arg, fmt.Errorf("unsupported type %v", p.typ))
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return fs._parseInts(args, arg, p)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return fs._parseUints(args, arg, p)
+	case reflect.Float32:
+		return fs._parseFloat32(args, arg, p)
+	case reflect.Float64:
+		return fs._parseFloat64(args, arg, p)
+	case reflect.Bool:
+		return fs._parseBool(args, arg, p)
+	case reflect.String:
+		return fs._parseString(args, arg, p)
+	case reflect.Slice:
+		if args.align {
+			return fs._parseSliceAlign(args, arg, p)
 		}
+		return fs._parseSlice(args, arg, p)
+	case reflect.Map:
+		return fs._parseMap(args, arg, p)
 	}
 }
 
@@ -876,29 +950,14 @@ func (fs *FlagSet) _parseParamErr(arg string, err error) error {
 	return fmt.Errorf("%v: parse option %v: %w", fs.fullName(), arg, err)
 }
 
-func (fs *FlagSet) _parseDuration(args *arguments, arg string, p *param) error {
+func (fs *FlagSet) _parseParser(args *arguments, arg string, p Parser) error {
 	if args.end() {
 		return fs._parseParamErr(arg, ErrNoInputValue)
 	}
-
-	dur, err := time.ParseDuration(args.next())
+	err := p.ParseFlag(args.next())
 	if err != nil {
 		return fs._parseParamErr(arg, err)
 	}
-	*p.ptr.(*time.Duration) = dur
-	return nil
-}
-
-func (fs *FlagSet) _parseDateTime(args *arguments, arg string, p *param) error {
-	if args.end() {
-		return fs._parseParamErr(arg, ErrNoInputValue)
-	}
-
-	t, err := time.ParseInLocation(DateTime, args.next(), time.Local)
-	if err != nil {
-		return fs._parseParamErr(arg, err)
-	}
-	*p.ptr.(*time.Time) = t
 	return nil
 }
 

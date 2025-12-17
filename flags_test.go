@@ -297,6 +297,25 @@ func TestDateTime(t *testing.T) {
 	}
 }
 
+func TestSliceDateTime(t *testing.T) {
+	var ds []time.Time
+	fs := New("datetime_slice", "")
+
+	dft, _ := time.ParseInLocation(DateTime, "2024-01-02T15:04:05", time.Local)
+	SliceVar(fs, &ds, 't', "times", nil, "a datetime slice")
+
+	// default
+	fs.Handle(func(context.Context) {
+		if !ds[0].Equal(dft) {
+			t.Fatalf("datetime slice run result: %v", ds[0])
+		}
+	})
+	_, err := fs.Run(context.Background(), "-t", dft.Format(DateTime))
+	if err != nil {
+		t.Fatalf("datetime run: %v", err)
+	}
+}
+
 func sliceEqual[T comparable](s []T, t ...T) bool {
 	if len(s) != len(t) {
 		return false
