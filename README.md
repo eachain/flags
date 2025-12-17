@@ -37,16 +37,13 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 
-	"github.com/eachain/flags"
+	"codeberg.org/3w/flags"
 )
 
 func main() {
-	fs := flags.New(filepath.Base(os.Args[0]), "this is a test app desc")
+	fs := flags.Cmdline("this is a test app desc")
 
 	bar := fs.Cmd("bar", "the first sub command", func(ctx context.Context, handler flags.Handler) {
 		fmt.Printf("before bar\n")
@@ -78,15 +75,7 @@ func main() {
 		fmt.Println("foo")
 	})
 
-	if usage, err := fs.Run(context.Background(), os.Args[1:]...); err != nil {
-		if errors.Is(err, flags.ErrHelp) || errors.Is(err, flags.ErrNoExecFunc) {
-			fmt.Fprintln(os.Stderr, usage)
-			return
-		}
-
-		fmt.Fprintln(os.Stderr, err.Error())
-		os.Exit(1)
-	}
+	fs.RunCmdline(context.Background())
 }
 ```
 
