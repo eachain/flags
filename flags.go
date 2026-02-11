@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ var (
 // FlagSet提供一组参数解析/命令执行的绑定关系。不可复用，如需要重复解析，需重新生成新的FlagSet。
 type FlagSet struct {
 	name    string         // 命令名称
+	aliases []string       // 别名
 	desc    string         // 命令描述
 	params  []*param       // 命令参数
 	paramOf map[any]*param // 指针->*param
@@ -233,7 +235,11 @@ func (fs *FlagSet) Usage() string {
 	if len(fs.cmds) > 0 {
 		fmt.Fprintf(w, "Commands:\n")
 		for _, cmd := range fs.cmds {
-			fmt.Fprintf(w, "  %v\n", cmd.name)
+			if len(cmd.aliases) > 0 {
+				fmt.Fprintf(w, "  %v (aliases: %v)\n", cmd.name, strings.Join(cmd.aliases, ", "))
+			} else {
+				fmt.Fprintf(w, "  %v\n", cmd.name)
+			}
 			if cmd.desc != "" {
 				for _, line := range strings.Split(cmd.desc, "\n") {
 					fmt.Fprintf(w, "    %v\n", line)
@@ -268,11 +274,15 @@ func (fs *FlagSet) Stmt(mws ...Middleware) *FlagSet {
 
 // Cmd：注册子命令，及子命令用到的中间件。
 func (fs *FlagSet) Cmd(name, desc string, mws ...Middleware) *FlagSet {
+	name = strings.TrimSpace(name)
 	if name == "" {
 		panic(fmt.Errorf("flags: subcommand name cannot be empty"))
 	}
+	if strings.HasPrefix(name, "-") {
+		panic(fmt.Errorf("flags: subcommand name cannot start with '-': %v", name))
+	}
 	for _, cmd := range fs.cmds {
-		if cmd.name == name {
+		if cmd.name == name || slices.Contains(fs.aliases, name) {
 			panic(fmt.Errorf("flags: duplicated subcommand: %v", name))
 		}
 	}
@@ -294,6 +304,26 @@ func (fs *FlagSet) Cmd(name, desc string, mws ...Middleware) *FlagSet {
 		fs.cmds = append(fs.cmds, cmd)
 	}
 	return cmd
+}
+
+// Alias：设置别名
+func (fs *FlagSet) Alias(aliases ...string) *FlagSet {
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if alias == "" {
+			continue
+		}
+		if strings.HasPrefix(alias, "-") {
+			panic(fmt.Errorf("flags: subcommand alias cannot start with '-': %v", alias))
+		}
+		for _, cmd := range fs.cmds {
+			if cmd.name == alias || slices.Contains(fs.aliases, alias) {
+				panic(fmt.Errorf("flags: duplicated subcommand: %v", alias))
+			}
+		}
+		fs.aliases = append(fs.aliases, alias)
+	}
+	return fs
 }
 
 type options struct {
@@ -452,7 +482,7 @@ func isLetter(b byte) bool {
 }
 
 func isSymbol(b byte) bool {
-	return b == '-' || b == '_' || b == '.'
+	return slices.Contains([]byte{'-', '_', '.', ':', '+', '/', '@', '~', '%', '^'}, b)
 }
 
 func ValidShort(short byte) bool {
@@ -850,7 +880,7 @@ func (fs *FlagSet) _parse(args *arguments) (*FlagSet, error) {
 func (fs *FlagSet) _parseSubcmd(args *arguments, arg string) (*FlagSet, error) {
 	var cmd *FlagSet
 	for _, c := range fs.cmds {
-		if c.name == arg {
+		if c.name == arg || slices.Contains(c.aliases, arg) {
 			cmd = c
 			break
 		}
@@ -902,9 +932,8 @@ func (fs *FlagSet) _parseLong(args *arguments, arg string) error {
 		return fmt.Errorf("%v: unknown option: %v", fs.name, arg)
 	}
 
-	if strings.HasPrefix(arg, "--"+param.long+"=") {
-		val := strings.TrimPrefix(arg, "--"+param.long+"=")
-		return fs._parseParam(newArg(val), arg, param)
+	if value, found := strings.CutPrefix(arg, "--"+param.long+"="); found {
+		return fs._parseParam(newArg(value), arg, param)
 	}
 	return fs._parseParam(args, arg, param)
 }
