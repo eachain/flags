@@ -894,21 +894,67 @@ func (fs *FlagSet) _parseSubcmd(args *arguments, arg string) (*FlagSet, error) {
 	return cmd._parse(args)
 }
 
-func (fs *FlagSet) _parseShort(args *arguments, arg string) error {
-	var param *param
-	for _, p := range fs.params {
-		if p.short != "" && "-"+p.short == arg {
-			param = p
-			break
-		}
+func isBoolParam(ptr any) bool {
+	_, ok := ptr.(Parser)
+	if ok {
+		return false
 	}
-	if param == nil {
-		if arg == "-h" {
-			return ErrHelp
-		}
+	return reflect.TypeOf(ptr).Elem().Kind() == reflect.Bool
+}
+
+func (fs *FlagSet) _parseShort(args *arguments, arg string) error {
+	rr := []rune(arg[1:])
+	if len(rr) == 0 {
 		return fmt.Errorf("%v: unknown option: %v", fs.name, arg)
 	}
-	return fs._parseParam(args, arg, param)
+
+	if len(rr) == 1 {
+		var param *param
+		for _, p := range fs.params {
+			if p.short != "" && "-"+p.short == arg {
+				param = p
+				break
+			}
+		}
+		if param == nil {
+			if arg == "-h" {
+				return ErrHelp
+			}
+			return fmt.Errorf("%v: unknown option: %v", fs.name, arg)
+		}
+		return fs._parseParam(args, arg, param)
+	}
+
+	var ps []*param
+	for _, r := range rr {
+		found := false
+		for _, p := range fs.params {
+			if p.short != "" && p.short == string(r) {
+				if isBoolParam(p.ptr) {
+					reflect.ValueOf(p.ptr).Elem().SetBool(true)
+				} else {
+					ps = append(ps, p)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			if r == 'h' {
+				return ErrHelp
+			}
+			return fmt.Errorf("%v: unknown option: -%c", fs.name, r)
+		}
+	}
+
+	slices.Reverse(ps)
+	for _, p := range ps {
+		err := fs._parseParam(args, arg, p)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (fs *FlagSet) _parseLong(args *arguments, arg string) error {

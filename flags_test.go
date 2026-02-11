@@ -555,3 +555,29 @@ func TestMapSlice(t *testing.T) {
 		t.Fatalf("map_slice run: %v", err)
 	}
 }
+
+func TestMulti(t *testing.T) {
+	var i int
+	var b bool
+	var s string
+	fs := New("multi", "")
+	fs.IntVar(&i, 'i', "int", 789, "a number value")
+	fs.BoolVar(&b, 'b', "bool", false, "a bool value")
+	fs.StrVar(&s, 's', "str", "hello", "a str value")
+
+	fs.Handle(func(context.Context) {
+		if i != 123 {
+			t.Fatalf("number run result: %v", i)
+		}
+		if b != true {
+			t.Fatalf("bool run result: %v", b)
+		}
+		if s != "world" {
+			t.Fatalf("str run result: %q", s)
+		}
+	})
+	_, err := fs.Run(context.Background(), "-ibs", "world", "123")
+	if err != nil {
+		t.Fatalf("multi run: %v", err)
+	}
+}
