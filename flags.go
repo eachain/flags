@@ -193,6 +193,7 @@ func (fs *FlagSet) Usage() string {
 	if fs.fn != nil && len(fs.params) > 0 {
 		fmt.Fprintf(w, "Options:\n")
 
+		index := 0
 		for _, p := range fs.params {
 			fmt.Fprintf(w, "  ")
 			if p.short != "" {
@@ -203,6 +204,10 @@ func (fs *FlagSet) Usage() string {
 					fmt.Fprintf(w, ", ")
 				}
 				fmt.Fprintf(w, "--%v", p.long)
+			}
+			if p.short == "" && p.long == "" {
+				index++
+				fmt.Fprintf(w, "$%v", index)
 			}
 			fmt.Fprintf(w, " %v", p.typ)
 			if p.dft != nil {
@@ -464,7 +469,7 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 		typ:   typ,
 		dft:   dft,
 		short: short,
-		long:  strings.TrimLeft(long, "-"),
+		long:  long,
 		desc:  desc,
 		sep1:  sep1,
 		sep2:  sep2,
@@ -885,13 +890,33 @@ func (fs *FlagSet) _parseSubcmd(args *arguments, arg string) (*FlagSet, error) {
 			break
 		}
 	}
-	if cmd == nil {
-		if arg == "help" {
-			return fs, ErrHelp
-		}
-		return fs, fmt.Errorf("%v: unknown sub command: %v", fs.name, arg)
+	if cmd != nil {
+		return cmd._parse(args)
 	}
-	return cmd._parse(args)
+
+	var index int
+	var param *param
+	for _, p := range fs.params {
+		if p.short == "" && p.long == "" {
+			index++
+			if !p.parsed {
+				param = p
+				break
+			}
+		}
+	}
+	if param != nil {
+		err := fs._parseParam(newArg(arg), fmt.Sprintf("$%v", index), param)
+		if err != nil {
+			return fs, err
+		}
+		return fs._parse(args)
+	}
+
+	if arg == "help" {
+		return fs, ErrHelp
+	}
+	return fs, fmt.Errorf("%v: unknown sub command: %v", fs.name, arg)
 }
 
 func isBoolParam(ptr any) bool {

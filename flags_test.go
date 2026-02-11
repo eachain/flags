@@ -581,3 +581,29 @@ func TestMulti(t *testing.T) {
 		t.Fatalf("multi run: %v", err)
 	}
 }
+
+func TestPositionArgs(t *testing.T) {
+	var i int
+	var b bool
+	var s string
+	fs := New("pos", "")
+	fs.IntVar(&i, NoShort, "", 789, "a number value")
+	fs.BoolVar(&b, NoShort, "", false, "a bool value")
+	fs.StrVar(&s, NoShort, "", "hello", "a str value")
+
+	fs.Handle(func(context.Context) {
+		if i != 123 {
+			t.Fatalf("number run result: %v", i)
+		}
+		if b != true {
+			t.Fatalf("bool run result: %v", b)
+		}
+		if s != "world" {
+			t.Fatalf("str run result: %q", s)
+		}
+	})
+	_, err := fs.Run(context.Background(), "123", "true", "world")
+	if err != nil {
+		t.Fatalf("pos run: %v", err)
+	}
+}
