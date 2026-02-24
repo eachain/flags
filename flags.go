@@ -447,6 +447,18 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 		}
 	}
 
+	if short == "" && long == "" {
+		var index int
+		for _, param := range fs.params {
+			if param.short == "" && param.long == "" {
+				index++
+				if isComParam(param.ptr) {
+					panic(fmt.Errorf("flags: cannot add nameless param after composite type param $%v", index))
+				}
+			}
+		}
+	}
+
 	var typ string
 	if t, ok := ptr.(Type); ok {
 		typ = t.FlagType()
@@ -899,7 +911,7 @@ func (fs *FlagSet) _parseSubcmd(args *arguments, arg string) (*FlagSet, error) {
 	for _, p := range fs.params {
 		if p.short == "" && p.long == "" {
 			index++
-			if !p.parsed {
+			if !p.parsed || isComParam(p.ptr) {
 				param = p
 				break
 			}
@@ -925,6 +937,11 @@ func isBoolParam(ptr any) bool {
 		return false
 	}
 	return reflect.TypeOf(ptr).Elem().Kind() == reflect.Bool
+}
+
+func isComParam(ptr any) bool {
+	kind := reflect.TypeOf(ptr).Elem().Kind()
+	return kind == reflect.Slice || kind == reflect.Map
 }
 
 func (fs *FlagSet) _parseShort(args *arguments, arg string) error {
