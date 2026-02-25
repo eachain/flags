@@ -607,3 +607,24 @@ func TestPositionArgs(t *testing.T) {
 		t.Fatalf("pos run: %v", err)
 	}
 }
+
+func TestRequired(t *testing.T) {
+	var i int
+	fs := New("required", "")
+	fs.IntVar(&i, 'i', "", 0, "a number value", WithRequired(true))
+
+	fs.Handle(func(context.Context) {
+		if i != 123 {
+			t.Fatalf("number run result: %v", i)
+		}
+	})
+	_, err := fs.Run(context.Background())
+	if err == nil {
+		t.Fatalf("required run: %v", err)
+	}
+	if er, ok := err.(RequiredError); !ok {
+		t.Fatalf("required run err type: %T", err)
+	} else if string(er) != "-i" {
+		t.Fatalf("required run err option: %v", string(er))
+	}
+}

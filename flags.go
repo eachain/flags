@@ -29,6 +29,13 @@ var (
 	ErrHelp         = errors.New("help")
 )
 
+// RequiredError 表示缺少的必设option。
+type RequiredError string
+
+func (re RequiredError) Error() string {
+	return fmt.Sprintf("flags: option `%s' required but not set", string(re))
+}
+
 // FlagSet提供一组参数解析/命令执行的绑定关系。不可复用，如需要重复解析，需重新生成新的FlagSet。
 type FlagSet struct {
 	name    string         // 命令名称
@@ -53,8 +60,9 @@ type param struct {
 	desc   string // 参数描述
 	parsed bool   // 是否已解析，用于判断是否将ptr设置为dft
 
-	sep1 string // seperator of every elem, used by slice & map
-	sep2 string // seperator of key/value, used by map
+	sep1     string // seperator of every elem, used by slice & map
+	sep2     string // seperator of key/value, used by map
+	required bool
 }
 
 // New生成一次性解析对象。name：应用名称，desc：应用描述，用于生成usage
@@ -226,6 +234,8 @@ func (fs *FlagSet) Usage() string {
 						fmt.Fprintf(w, " (default: %v)", p.dft)
 					}
 				}
+			} else if p.required {
+				fmt.Fprint(w, " (required)")
 			}
 			fmt.Fprintln(w)
 			if p.desc != "" {
@@ -335,6 +345,7 @@ type options struct {
 	sliceSep string
 	kvSep    string
 	zeroDft  bool
+	required bool
 }
 
 // Options：设置参数规则。
@@ -369,6 +380,15 @@ func WithKeyValueSeperator(seperator string) Options {
 func WithZeroDefault(zero bool) Options {
 	return optionsFunc(func(opt *options) {
 		opt.zeroDft = zero
+	})
+}
+
+// WithRequired：是否必须参数。
+// 如果设置为true，且没有默认值，
+// 没有在命令行中指定该参数时将报错。
+func WithRequired(required bool) Options {
+	return optionsFunc(func(opt *options) {
+		opt.required = required
 	})
 }
 
@@ -477,14 +497,15 @@ func (fs *FlagSet) addVar(ptr any, shortByte byte, long string, dft any, desc st
 		sep2 = opts.kvSep
 	}
 	fs.params = append(fs.params, &param{
-		ptr:   ptr,
-		typ:   typ,
-		dft:   dft,
-		short: short,
-		long:  long,
-		desc:  desc,
-		sep1:  sep1,
-		sep2:  sep2,
+		ptr:      ptr,
+		typ:      typ,
+		dft:      dft,
+		short:    short,
+		long:     long,
+		desc:     desc,
+		sep1:     sep1,
+		sep2:     sep2,
+		required: opts.required,
 	})
 	fs.paramOf[ptr] = fs.params[len(fs.params)-1]
 }
@@ -857,7 +878,27 @@ func (fs *FlagSet) Parsed(pointer any) bool {
 }
 
 func (fs *FlagSet) parse(args []string) (*FlagSet, error) {
-	return fs._parse(newArgs(args...))
+	f, e := fs._parse(newArgs(args...))
+	if e != nil {
+		return f, e
+	}
+	var index int
+	for _, p := range f.params {
+		if p.short == "" && p.long == "" {
+			index++
+		}
+		if p.required && !p.parsed && p.dft == nil {
+			if p.long != "" {
+				e = RequiredError("--" + p.long)
+			} else if p.short != "" {
+				e = RequiredError("-" + p.short)
+			} else {
+				e = RequiredError(fmt.Sprintf("$%v", index))
+			}
+			break
+		}
+	}
+	return f, e
 }
 
 func (fs *FlagSet) setDft() {
